@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+dist/
+build/
+# runtime artifacts (contain raw key values — never commit)
+keypool_state.json
+keypool.healthy.json
