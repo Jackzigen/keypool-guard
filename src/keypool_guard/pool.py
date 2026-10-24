@@ -174,6 +174,9 @@ class KeyPool:
                         key_data.get("consecutive_failures", 0)
                     )
                     state.quarantined_at = key_data.get("quarantined_at")
+                    state.last_checked = key_data.get("last_checked")
+                    state.last_latency_ms = key_data.get("last_latency_ms")
+                    state.last_error = str(key_data.get("last_error", "") or "")
                     state.total_probes = int(key_data.get("total_probes", 0))
                     state.total_failures = int(
                         key_data.get("total_failures", 0)

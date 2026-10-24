@@ -7,25 +7,37 @@ import time
 from typing import Optional
 
 
-def save_state(path: str, providers: dict) -> None:
-    """Atomically write the pool state to ``path`` as JSON.
+def write_private_json(path: str, payload: dict) -> None:
+    """Atomically write ``payload`` as JSON to ``path`` with 0600 perms.
 
-    Writes to a temp file in the same directory, chmod 0600, then
-    ``os.replace`` so a crash never leaves a half-written state file.
+    The temp file is created with 0600 from the first instant (mode is
+    applied by ``os.open`` at creation, not fixed up afterwards), so a
+    file holding raw key values is never briefly world-readable. The
+    write goes to a temp file in the same directory, is fsynced, then
+    atomically renamed — a crash never leaves a half-written file.
     """
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(
-            {"saved_at": time.time(), "providers": providers},
-            f,
-            indent=2,
-        )
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)  # don't litter on failure
+        except OSError:
+            pass
+        raise
+
+
+def save_state(path: str, providers: dict) -> None:
+    """Atomically write the pool state to ``path`` as JSON (0600)."""
+    write_private_json(path, {"saved_at": time.time(), "providers": providers})
 
 
 def load_state(path: str) -> Optional[dict]:

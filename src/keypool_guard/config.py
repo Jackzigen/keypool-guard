@@ -139,6 +139,7 @@ def _parse_keys(raw: Any, origin: str) -> List[KeyConfig]:
     )
     keys: List[KeyConfig] = []
     seen: set = set()
+    labels: set = set()
     for i, item in enumerate(raw):
         korigin = f"{origin}: keys[{i}]"
         if isinstance(item, str):
@@ -164,6 +165,16 @@ def _parse_keys(raw: Any, origin: str) -> List[KeyConfig]:
             f"{origin}: duplicate key at index {i}",
         )
         seen.add(value)
+        # Explicit labels must be unique per provider: pool state is keyed
+        # by (provider, label), so two keys named "main" would silently
+        # overwrite each other's state.
+        if name:
+            _require(
+                name not in labels,
+                f"{origin}: duplicate key name '{name}' "
+                f"(keys[{i}] clashes with an earlier key)",
+            )
+            labels.add(name)
         keys.append(KeyConfig(value=value, name=name))
     return keys
 

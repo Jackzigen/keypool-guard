@@ -70,7 +70,10 @@ async def probe_key(
             headers={"Authorization": f"Bearer {key.value}"},
             json=_probe_payload(provider),
         )
-    except (httpx.TimeoutException, httpx.TransportError) as exc:
+    except httpx.RequestError as exc:
+        # Superset of timeout/transport errors: also covers redirect loops,
+        # invalid URLs and cookie/protocol issues. Any of these means "no
+        # usable response" — classify as network trouble, never crash.
         latency = (time.monotonic() - started) * 1000.0
         kind = type(exc).__name__
         return ProbeResult(

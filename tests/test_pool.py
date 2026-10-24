@@ -176,3 +176,23 @@ def test_healthy_subpool_output():
     assert provider["total"] == 3
     assert provider["keys"] == ["sk-good", "sk-flaky"]
     assert doc["updated_at"].endswith("Z")
+
+
+def test_restore_preserves_last_error_and_latency(tmp_path):
+    """Regression: restart used to drop last_error/last_latency_ms/
+    last_checked, so reports showed a clean history after every restart."""
+    config = build_config()
+    pool = KeyPool(config)
+    bad = apply_named(pool, config, "bad", FailureClass.INVALID, 401)
+    bad.last_error = "invalid key (HTTP 401)"
+    bad.last_latency_ms = 234.5
+    bad.last_checked = 1750000000.0
+    state_path = str(tmp_path / "state.json")
+    save_state(state_path, pool.to_json())
+
+    restarted = KeyPool(config)
+    restarted.restore_json(load_state(state_path))
+    restored = restarted.state("mock", "bad")
+    assert restored.last_error == "invalid key (HTTP 401)"
+    assert restored.last_latency_ms == 234.5
+    assert restored.last_checked == 1750000000.0

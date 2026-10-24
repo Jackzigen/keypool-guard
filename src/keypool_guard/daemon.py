@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import signal
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,7 +24,7 @@ from typing import Optional
 from .config import GuardConfig
 from .pool import KeyPool
 from .prober import probe_provider
-from .state import load_state, save_state
+from .state import load_state, save_state, write_private_json
 
 logger = logging.getLogger("keypool-guard")
 
@@ -102,6 +101,7 @@ class GuardDaemon:
     def __init__(self, config: GuardConfig, pool: Optional[KeyPool] = None):
         self.config = config
         self.pool = pool if pool is not None else KeyPool(config)
+        self.endpoint: Optional[HealthEndpoint] = None
         previous = load_state(config.state_file)
         if previous is not None:
             self.pool.restore_json(previous)
@@ -116,15 +116,28 @@ class GuardDaemon:
         self.rounds += 1
 
         subpool = self.pool.healthy_subpool()
-        output_path = self.config.output_file
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(subpool, f, indent=2)
-            f.write("\n")
         try:
-            os.chmod(output_path, 0o600)
-        except OSError:
-            pass
-        save_state(self.config.state_file, self.pool.to_json())
+            write_private_json(self.config.output_file, subpool)
+        except OSError as exc:
+            # Disk full / permissions / output dir gone. Log loudly and keep
+            # the daemon alive — the previous round's files stay in place,
+            # which beats a dead guardian over a stale file.
+            logger.error(
+                "round %d: could not write output file %s (%s); "
+                "keeping previous file",
+                self.rounds,
+                self.config.output_file,
+                exc,
+            )
+        try:
+            save_state(self.config.state_file, self.pool.to_json())
+        except OSError as exc:
+            logger.error(
+                "round %d: could not write state file %s (%s)",
+                self.rounds,
+                self.config.state_file,
+                exc,
+            )
 
         healthy = sum(p["healthy"] for p in subpool["providers"])
         total = sum(p["total"] for p in subpool["providers"])
@@ -133,7 +146,7 @@ class GuardDaemon:
             self.rounds,
             healthy,
             total,
-            output_path,
+            self.config.output_file,
         )
         return subpool
 
@@ -151,12 +164,25 @@ class GuardDaemon:
 
         endpoint: Optional[HealthEndpoint] = None
         if self.config.server.enabled:
-            endpoint = HealthEndpoint(self.config.server.host, self.config.server.port)
-            endpoint.start()
+            try:
+                endpoint = HealthEndpoint(self.config.server.host, self.config.server.port)
+            except OSError as exc:
+                logger.error(
+                    "health endpoint could not bind %s:%d (%s) — "
+                    "continuing without it",
+                    self.config.server.host,
+                    self.config.server.port,
+                    exc,
+                )
+            else:
+                endpoint.start()
+        self.endpoint = endpoint
 
         try:
             while not stop.is_set():
-                await self.round()
+                subpool = await self.round()
+                if endpoint is not None:
+                    endpoint.publish(subpool)
                 try:
                     await asyncio.wait_for(
                         stop.wait(), timeout=self.config.interval_seconds

@@ -141,3 +141,83 @@ def test_health_endpoint_serves_subpool(mock_server, write_config, tmp_path):
         assert excinfo.value.code == 404
     finally:
         endpoint.stop()
+
+
+def test_run_forever_publishes_subpool_to_endpoint(mock_server, write_config, tmp_path):
+    """Regression: run_forever used to drop the round result on the floor —
+    /healthy served 503 forever even after successful rounds."""
+    mock_server.set("sk-ok", status=200)
+    config_path = write_config(
+        mock_server.base_url,
+        ["sk-ok"],
+        interval=60.0,
+        server={"enabled": True, "host": "127.0.0.1", "port": 0},
+    )
+    config = load_config(config_path)
+    daemon = GuardDaemon(config)
+
+    async def drive():
+        task = asyncio.create_task(daemon.run_forever())
+        body = None
+        try:
+            # wait for the endpoint to come up and one round to complete
+            for _ in range(100):
+                await asyncio.sleep(0.1)
+                if daemon.endpoint is not None:
+                    try:
+                        raw = urllib.request.urlopen(
+                            f"http://127.0.0.1:{daemon.endpoint.port}/healthy",
+                            timeout=2,
+                        ).read()
+                        body = json.loads(raw)
+                        break
+                    except Exception:
+                        continue
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        return body
+
+    body = run(drive())
+    assert body is not None, "/healthy never served a subpool"
+    assert body["providers"][0]["keys"] == ["sk-ok"]
+
+
+def test_round_survives_output_write_failure(mock_server, write_config, tmp_path):
+    """Regression: an OSError while writing output/state used to kill the
+    daemon loop; now it logs and keeps the previous files."""
+    mock_server.set("sk-ok", status=200)
+    config_path = write_config(mock_server.base_url, ["sk-ok"])
+    config = load_config(config_path)
+    daemon = GuardDaemon(config)
+    run(daemon.round())  # first round writes files normally
+
+    # sabotage: point the output file at a directory (a write must fail)
+    import os as _os
+
+    config.output_file = str(tmp_path / "sabotage-dir" / "x")
+    _os.makedirs(config.output_file)  # a directory where a file is expected
+    subpool = run(daemon.round())  # must not raise
+    assert subpool["providers"][0]["healthy"] == 1
+    # the previous round's healthy.json is untouched on disk
+    assert json.loads((tmp_path / "healthy.json").read_text())["providers"][0][
+        "keys"
+    ] == ["sk-ok"]
+
+
+def test_round_survives_state_write_failure(mock_server, write_config, tmp_path):
+    mock_server.set("sk-ok", status=200)
+    config_path = write_config(mock_server.base_url, ["sk-ok"])
+    config = load_config(config_path)
+    daemon = GuardDaemon(config)
+    run(daemon.round())
+
+    import os as _os
+
+    config.state_file = str(tmp_path / "state-as-dir")
+    _os.makedirs(config.state_file)
+    subpool = run(daemon.round())  # must not raise
+    assert subpool["providers"][0]["healthy"] == 1

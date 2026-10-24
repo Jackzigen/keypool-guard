@@ -157,3 +157,21 @@ def test_bad_port(write_config):
     )
     with pytest.raises(ConfigError, match="server.port"):
         load_config(path)
+
+
+def test_duplicate_key_name_same_provider(write_config):
+    """Regression: two keys explicitly named 'main' used to silently
+    overwrite each other's pool state (pool is keyed by label)."""
+    path = write_config(
+        "https://x.example/v1",
+        [{"value": "sk-a", "name": "main"}, {"value": "sk-b", "name": "main"}],
+    )
+    with pytest.raises(ConfigError, match="duplicate key name 'main'"):
+        load_config(path)
+
+
+def test_unnamed_duplicate_keys_still_pass(write_config):
+    # uniqueness for unnamed keys comes from the masked value, not names
+    path = write_config("https://x.example/v1", ["sk-a", "sk-b"])
+    config = load_config(path)
+    assert len(config.providers[0].keys) == 2

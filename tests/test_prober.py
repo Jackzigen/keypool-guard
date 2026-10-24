@@ -143,3 +143,28 @@ def test_key_label_prefers_name(mock_server):
     client = httpx.AsyncClient(timeout=15.0)
     result = run(probe_key(client, provider, provider.keys[0]))
     assert result.key_name == "primary"
+
+
+def test_probe_survives_unexpected_request_error(mock_server):
+    """Regression: httpx exceptions outside Timeout/Transport (e.g. redirect
+    loops raising TooManyRedirects, which is a RequestError but not a
+    TransportError) used to escape probe_key and crash the round."""
+    import httpx as _httpx
+
+    async def go():
+        provider = make_provider(mock_server.base_url, ["sk-x"])
+
+        class ExplodingClient:
+            async def post(self, *a, **kw):
+                raise _httpx.TooManyRedirects(
+                    "redirect loop"
+                )
+
+        from keypool_guard.prober import probe_key
+
+        return await probe_key(ExplodingClient(), provider, provider.keys[0])
+
+    result = run(go())
+    assert result.cls is FailureClass.NETWORK_ERROR
+    assert result.http_status is None
+    assert "TooManyRedirects" in result.error
